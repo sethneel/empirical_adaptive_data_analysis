@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
-
 import math
 import numpy as np
 import scipy.stats
 import scipy.optimize
+from scipy.special import erfcinv
+import matplotlib.pyplot as plt
 
 
 def mgf_width(n, p, beta, upper=True):
@@ -67,11 +68,13 @@ def chernoff_conf(n, q, beta):
     """
 
     n_split = int(np.floor(n / q))
-    x = int(np.floor(n_split/2))
-    while scipy.stats.binom.cdf(x, n_split, .5) < 1 - beta / (2 * q):
-        x += 1
-    width = float(np.abs(x - float(n_split) / 2)) / n_split
-    return width
+    return math.sqrt(math.log(2 * q / beta) / (2 * n_split))
+
+    # x = int(np.floor(n_split/2))
+    # while scipy.stats.binom.cdf(x, n_split, .5) < 1 - beta / (2 * q):
+    #    x += 1
+    # width = float(np.abs(x - float(n_split) / 2)) / n_split
+    # return width
 
 
 def adv_comp(q, eps, delta, method="DP"):
@@ -109,7 +112,7 @@ def conf_width_BNSSSU(n, q, beta):
 
     def g1(p):  # p = [rho, delta]
         epsilon = adv_comp(q, p[0], p[1], method="CDP")
-        lhs = (math.exp(epsilon) - 1 + 2 * math.floor(float(1) / beta) * p[1])
+        lhs = (math.exp(epsilon) - 1 + 6 * math.floor(float(1) / beta) * p[1])
         rhs = float(1) / n * math.sqrt(float(1) / p[0] * math.log(max(float(4) * q / p[1], 1.0)))
         return lhs + rhs
 
@@ -126,10 +129,50 @@ def conf_width_BNSSSU(n, q, beta):
     lower = 10 ** (-15)
     upper = 1.0 / math.sqrt(q)
     bounds = ((lower, upper), (lower, upper))
-    res = scipy.optimize.minimize(g1, guess_for_BNSSSU(n, q, beta, [.001, .000001]),
-                                  bounds=bounds, tol=10 ** (-15))
+    res = scipy.optimize.minimize(g1, guess_for_BNSSSU(n, q, beta, [.001, .000001]), bounds=bounds, tol=10 ** (-15))
     alpha = min(1, g1(res.x) / (1 - float(1 - beta) ** (math.floor(1.0 / beta))))
+    # print(res.status)
+    # print(res.success)
+    # print(res.message)
+    # print(res.x)
     return alpha
+
+
+def conf_width_posterior(n, q, beta):
+    """
+    :param n: total number of samples
+    :param q: total number of queries
+    :param beta: desired significance (coverage should be at least 1-beta)
+    :returns: the confidence width that is guaranteed via BNSSSU'16 for each answer
+    """
+
+    # Our function to optimize. Here c is set the same way for beta and delta.
+    def g1(x):  # x = [rho,delta]
+        betap = x[1]  # Setting Beta' = delta for no good reason. Can try other values.
+        epsilon = adv_comp(q, x[0], x[1], method="CDP")
+        lhs = (math.exp(epsilon) - 1 + 3 * (betap + x[1]) / beta)
+        rhs = math.sqrt(float(1) / (x[0] * (n * n))) * erfcinv(betap / q)
+        return lhs + rhs
+
+    def guess_for_BNSSSU(n, q, beta, x0):
+        t = math.floor(1 / beta)
+
+        def g(x):  # x = [rho,beta']
+            return math.sqrt(t * x[0] * q / 2) + 1 / n * math.sqrt(1 / x[0] * (math.log(2 * q / x[1]))) + 2 * t * x[1]
+
+        bounds = ((10 ** (-15), 1.0 / math.sqrt(q)), (10 ** (-15), 1))
+        res = scipy.optimize.minimize(g, x0, bounds=bounds, tol=10 ** (-15))
+        return res.x
+
+    lower = 10 ** (-15)
+    upper = 1.0 / math.sqrt(q)
+    bounds = ((lower, upper), (lower, upper))
+    res = scipy.optimize.minimize(g1, guess_for_BNSSSU(n, q, beta, [.001, .000001]), bounds=bounds, tol=10 ** (-15))
+    # print(res.status)
+    # print(res.success)
+    # print(res.message)
+    # print(res.x)
+    return g1(res.x)
 
 
 def conf_width_DFHPRR(n, q, beta):
@@ -182,7 +225,7 @@ def conf_width_RZ(n, q, beta, sigma=-1.0):
             return float(2 * x - np.log(1 - y)) / y
 
         res_inn = scipy.optimize.minimize_scalar(f, bounds=(0.0, 1.0 - 10 ** (-15)), method='bounded')
-        temp = (float(2) * res_inn.fun) / (n * beta)   # (2*x+math.log(x)+ float((2*x+math.log(x)))/(x-1))
+        temp = (float(2) * res_inn.fun) / (n * beta)  # (2*x+math.log(x)+ float((2*x+math.log(x)))/(x-1))
         if temp >= 0:
             return math.sqrt(temp)
         else:
@@ -225,6 +268,7 @@ def conf_width_XR(n, q, beta):
     :param beta: desired significance (coverage should be at least 1-beta)
     :returns: the confidence width that is guaranteed via CDP (BS'16) + BNSSSU'16 + XR'17 for each answer
     """
+
     def g3(x):  # x = q n \rho'
         temp = (float(8) / n) * ((2 * x / beta) + math.log(4 / beta, 2))
         if temp >= 0:
@@ -266,6 +310,7 @@ def bounds_Thresh(h, thresh, q, b, sigma, beta=0.0, only_last_query=False):
     :param only_last_query: whether coverage required only for the last query asked
     :returns: the confidence width that is guaranteed for Thresholdout
     """
+
     def f(y):  # y = lambda
         return float((2 * b / (h * pow(sigma, 2))) - np.log(1 - y)) / y
 
@@ -280,8 +325,8 @@ def bounds_Thresh(h, thresh, q, b, sigma, beta=0.0, only_last_query=False):
         laps_sq_sum = 0.0
         exp_over = 100  # Calculate avg over exp_over samples of sum of max of q Laplace r.v.'s and b Laplace r.v.'s
         for _ in range(exp_over):
-            w_max = max(np.random.laplace(scale=4*sigma, size=q))
-            y_max = max(np.random.laplace(scale=2*sigma, size=b)) if b > 0 else 0
+            w_max = max(np.random.laplace(scale=4 * sigma, size=q))
+            y_max = max(np.random.laplace(scale=2 * sigma, size=b)) if b > 0 else 0
             laps_sum += (w_max + y_max)
             laps_sq_sum = pow((w_max + y_max), 2)
         laps = laps_sum / exp_over
@@ -298,4 +343,115 @@ def bounds_Thresh(h, thresh, q, b, sigma, beta=0.0, only_last_query=False):
     if beta == 0.0:
         return sum(comps)
     else:
-        return math.sqrt(sum(comps)/beta)
+        return math.sqrt(sum(comps) / beta)
+
+
+# Plot number of queries k by confidence interval width
+# n = dataset size, 1-beta = uniform coverage probability, k ranges from kmin to kmin+plotpoints*incr in increments of incr
+def make_plot(n, beta, kmin, incr, plotpoints):
+    baselinewidth = [0 for i in range(plotpoints)]
+    BNSSSUwidth = [0 for i in range(plotpoints)]
+    DFHPRRwidth = [0 for i in range(plotpoints)]
+    # RZwidth = [0 for i in range(plotpoints)]
+    posteriorwidth = [0 for i in range(plotpoints)]
+
+    for i in range(plotpoints):
+        baselinewidth[i] = min(chernoff_conf(n, kmin + i * incr, beta), 0.5)
+        BNSSSUwidth[i] = min(conf_width_BNSSSU(n, kmin + i * incr, beta), 0.5)
+        DFHPRRwidth[i] = min(conf_width_DFHPRR(n, kmin + i * incr, beta), 0.5)
+        posteriorwidth[i] = min(conf_width_posterior(n, kmin + i * incr, beta), 0.5)
+        # RZwidth[i] = min(conf_width_RZ(n,kmin+i*incr,beta),0.5)
+
+    xvalues = [kmin + i * incr for i in range(plotpoints)]
+
+    fig_size = plt.rcParams["figure.figsize"]
+    fig_size[0] = 24
+    fig_size[1] = 16
+    plt.rcParams["figure.figsize"] = fig_size
+    plt.rcParams.update({'font.size': 32})
+
+    fig, ax = plt.subplots()
+    ax.plot(xvalues, baselinewidth, 'k--', label='Baseline')
+    ax.plot(xvalues, BNSSSUwidth, 'k:', label='BNSSSU')
+    ax.plot(xvalues, posteriorwidth, 'k', label='Posterior')
+    ax.plot(xvalues, DFHPRRwidth, 'rs', label='DFHPRR')
+
+    legend = ax.legend(loc='upper right', shadow=False, fontsize='x-large')
+
+    # plt.plot(xvalues, exactError)
+    # plt.plot(xvalues, centralError)
+    # plt.plot(xvalues, localError)
+
+    plt.xlabel("Number of Queries")
+    plt.ylabel("Confidence Interval Width")
+    plt.title("Data set size n = " + str(n) + ", Uniform Coverage Probability = " + str((1 - beta) * 100) + "%")
+    plt.savefig('plot.pdf')
+    plt.show()
+
+
+# Plot for each n from min to min*incr^plotpoints number of queries that can be answered with width < tau
+def make_plot2(beta, tau, min, incr, plotpoints):
+    baselinek = [0 for i in range(plotpoints)]
+    BNSSSUk = [0 for i in range(plotpoints)]
+    posteriork = [0 for i in range(plotpoints)]
+    for i in range(plotpoints):
+        n = min * (incr ** i)
+
+        # Perform Binary Search for Baseline
+        kmin = 1
+        kmax = n
+        while kmax - kmin > 1:
+            midpoint = int((kmin + kmax) / 2)
+            if chernoff_conf(n, midpoint, beta) > tau:
+                kmax = midpoint
+            else:
+                kmin = midpoint
+        baselinek[i] = kmin
+
+        # Perform Binary Search for BNSSSU
+        kmin = 1
+        kmax = n
+        while kmax - kmin > 1:
+            midpoint = int((kmin + kmax) / 2)
+            if conf_width_BNSSSU(n, midpoint, beta) > tau:
+                kmax = midpoint
+            else:
+                kmin = midpoint
+        BNSSSUk[i] = kmin
+
+        # Perform Binary Search for posterior
+        kmin = 1
+        kmax = n
+        while kmax - kmin > 1:
+            midpoint = int((kmin + kmax) / 2)
+            if conf_width_posterior(n, midpoint, beta) > tau:
+                kmax = midpoint
+            else:
+                kmin = midpoint
+        posteriork[i] = kmin
+
+    xvalues = [min * (incr ** i) for i in range(plotpoints)]
+    fig_size = plt.rcParams["figure.figsize"]
+    fig_size[0] = 24
+    fig_size[1] = 16
+    plt.rcParams["figure.figsize"] = fig_size
+    plt.rcParams.update({'font.size': 32})
+
+    fig, ax = plt.subplots()
+    ax.plot(xvalues, baselinek, 'k--', label='Baseline')
+    ax.plot(xvalues, BNSSSUk, 'k:', label='BNSSSU')
+    ax.plot(xvalues, posteriork, 'k', label='Posterior')
+    # ax.plot(xvalues, DFHPRRwidth, 'rs', label='DFHPRR')
+
+    legend = ax.legend(loc='upper right', shadow=False, fontsize='x-large')
+
+    # plt.plot(xvalues, exactError)
+    # plt.plot(xvalues, centralError)
+    # plt.plot(xvalues, localError)
+
+    plt.xlabel("Data Set Size n")
+    plt.ylabel("Number of Queries")
+    plt.title("Max Queries Answered with Width= " + str(tau) + " and Uniform Coverage " + str(100 * (1 - beta)) + "%")
+    plt.savefig('plot2.pdf')
+    plt.show()
+
